@@ -4,7 +4,7 @@
  * This clock is built to display spelled out words depending on the time of day.
  * The code depends on both an RTC and Addressable RGB LEDs
  * 
- * RGB LEDs used: WS2812B LEDs on a 5v strip connected to pin 6
+ * RGB LEDs used: WS2812B LEDs on a 5v strip connected to pin D5
  *
  */
  
@@ -15,21 +15,18 @@
  //NTP
 #include <NTPClient.h>
  
-#include <Wire.h>
-#include <SPI.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+//LEDS
 #include <Adafruit_NeoPixel.h>
+#ifdef __AVR__
+#include <avr/power.h>
+#endif
 
 /*** DEF & CONST***/
 //ESP8266
-const char ssid[] = "Fablab_5G";            // inserire l'ssid della rete
-const char pass[] = "34935135";  // password della rete
-
-
-// Creazione di un server web in ascolto sulla porta 80
-// attende contenuti (pagine html, immagini, css, ecc...)
-WiFiServer server(80);
+const char* ssid = "5G_test"; //ssid della rete
+const char* password = "Matildaseimitica$"; // password della rete
+// const char* ssid ="Fablab_5G";            
+// const char* password = "34935135";  
 
 //NTP
 const long utcOffsetInSeconds = 3600;
@@ -40,41 +37,23 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", utcOffsetInSeconds);
 int oraAttuale = 0;
 
-#define OLED_RESET 4
-Adafruit_SSD1306 display(OLED_RESET);
-#if (SSD1306_LCDHEIGHT != 32)
-#error("Height incorrect, please fix Adafruit_SSD1306.h!");
-#endif
-#ifdef __AVR__
-#include <avr/power.h>
-#endif
-
-#define RGBLEDPIN    6
+#define RGBLEDPIN    D5
 
 #define N_LEDS 100 // 10 x 10 grid
 #define TIME_HEADER  "T"   // Header tag for serial time sync message
-#define BRIGHTNESSDAY 100 //200 // full on
-#define BRIGHTNESSNIGHT 50 // half on
+#define BRIGHTNESSDAY 15
+#define BRIGHTNESSNIGHT 10
 
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(N_LEDS, RGBLEDPIN, NEO_GRB + NEO_KHZ800);
-
-const int buttonSET_Pin = 50;
-const int buttonUP_Pin = 51;
-const int buttonDOWN_Pin = 52;
-
-int buttonSET_State = 0;
-int buttonUP_State = 0;
-int buttonDOWN_State = 0;
-
-int menu=0;
-int ButtonSetState, ButtonUpState,ButtonDownState;
-int lastButtonSetState,  lastButtonUpState, lastButtonDownState= 0;
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(N_LEDS, RGBLEDPIN, NEO_GRB + NEO_KHZ800);
 
 // a few vars to keep the peace;
 int intBrightness = BRIGHTNESSDAY; // the brightness of the clock (0 = off and 255 = 100%)
-int intTestMode; // set when both buttons are held down
 String strTime = ""; // used to detect if word time has changed
-int intTimeUpdated = 0; // used to tell if we need to turn on the brightness again when words change
+
+unsigned long previousMillis = 0;
+const long CONST1_SEC = 1000; // Intervallo in millisecondi
+const long CONST2_SEC = 2000;
+const long CONST5_SEC = 5000; 
 
 // the words
 int arrSONO_LE[] = {
@@ -122,11 +101,11 @@ int arrE_CONG[] = {
 int arrMIN_UNO[] = {
   1,-1};
 int arrMIN_DUE[] = {
-  30,-1};
+  1,30,-1};
 int arrMIN_TRE[] = {
-  51-1};
+  1,30,51-1};
 int arrMIN_QUATTRO[] = {
-  80,-1};
+  1,30,51,80,-1};
 int arrMIN_CINQUE[] = {
   85,56,57,58,59,60,-1};
 
@@ -139,317 +118,127 @@ int arrMIN_QUINDICI[] = {
 int arrMIN_VENTI[] = {
   90,89,88,87,86,-1};
 
-int arrMIN_TRENTA[] = {
-  65,64,63,62,61,-1};
-int arrMIN_QUARANTA[] = {
-  112,113,114,115,116,117,118,119,-1};
-
-int arrMIN_CINQUANTA[] = {
-  96,97,98,99,100,101,102,103,104,-1};
-
-int arrMIN_QUARTO[] = {
-  79,78,77,76,55,54,53,52,-1};
 int arrMIN_MEZZA[] = {
   65,64,63,62,61,-1};
 
-
 void setup() {
-  //inizializza led strip
-  strip.begin();
-  strip.setBrightness(10);
-  strip.show(); //initializa all pixel to 'off'
 
-  pinMode(buttonSET_Pin, INPUT);
-  pinMode(buttonUP_Pin, INPUT);
-  pinMode(buttonDOWN_Pin, INPUT);
-
+  //Connessione WiFi
+  Serial.begin(9600);
+  WiFi.begin(ssid, password);
+  Serial.println();
+  Serial.println();
+  Serial.print("Connessione ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connessa");
+  
   //inizializza NTP
   timeClient.begin();
+  
+  //inizializza pannello led
+  pixels.begin();
+  pixels.setBrightness(BRIGHTNESSDAY);
+  pixels.show(); //inizializza tutti i pixel a 'off'
 
-
-  Serial.begin(9600);
-  Wire.begin();
-
-     delay(3000); // wait for console opening
-
-}
-
-void text(void) {
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
+  delay(3000); // wait for console opening
 }
 
 void loop () {
-  timeClient.update();  //recupero l'ora corrente dal server NTP
-  now = timeClient.getHours();
+  unsigned long currentMillis = millis();
 
-  ButtonSetState = digitalRead(buttonSET_Pin);
-
-  if (ButtonSetState == LOW) { 
-    Serial.println("low");
-  }
-  else if (ButtonSetState == HIGH) { 
-    Serial.println("high");
-  }
-
-  if (ButtonSetState != lastButtonSetState) {
-    if (ButtonSetState == HIGH) {
-      menu=menu+1;
-      if (menu>3){
-        menu=0;  
-      }
-    }
-  }
-
-//  Serial.print("menu ");
-//  Serial.print(menu);
-//  Serial.println();
-  display.clearDisplay();
-  display.setCursor(0,24);
-  display.print("menu: ");
-  
-  switch (menu) {
-  case 0:
-    display.print("mostra ore");
+  // recupero l'ora corrente e aggiorno l'orologio solo ogni INTERVAL
+  if (currentMillis - previousMillis >= CONST5_SEC) {
+    timeClient.update();  //recupero l'ora corrente dal server NTP
     mostra_tempo();
-    break;
-  case 1:
-  display.print("cambio ore");
-    cambia_ore();
-    mostra_tempo();
-    break;
-  case 2:
-    display.print("cambio minuti");
-    cambia_minuti();
-    mostra_tempo();
-    break;
-  case 3:
-    display.print("reset orario");
-    reset_tempo();
-    mostra_tempo();
-//    menu=0;
-    break;
+    previousMillis = currentMillis;
   }
-  display.display();
-  lastButtonSetState=ButtonSetState;
-  //delay(100);
-}
-
-void reset_tempo(){
-  ButtonUpState = digitalRead(buttonUP_Pin);
-
-  if (ButtonUpState != lastButtonUpState) {
-    // following line sets the RTC to the date & time this sketch was compiled
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    menu=0;
-  }
-  lastButtonUpState = ButtonUpState;
 }
 
 void mostra_tempo(){
-  int ore = now.hour();
-  int minuti = now.minute();
-  int secondi= now.second();
+  int ore = timeClient.getHours();
+  int minuti = timeClient.getMinutes();
+  int secondi= timeClient.getSeconds();
 
-  display.setCursor(0,12);
-  display.print(ore, DEC);
-  display.print(":");
-  display.print(minuti, DEC);
-  display.print(" ");
-  display.print(secondi, DEC);
-
-//  Serial.print("ora=");
-//  Serial.print(ore);
-//  Serial.print(':');
-//  Serial.print(minuti);
-//  Serial.print(' ');
-//  Serial.print(secondi);
-//  Serial.println();
+  Serial.print("ora=");
+  Serial.print(ore);
+  Serial.print(':');
+  Serial.print(minuti);
+  Serial.print(' ');
+  Serial.print(secondi);
+  Serial.println();
 
   print_minuti(minuti);
   print_ore(ore);
 
   //accendo la strip nei punti programmati
-  strip.show();
+  pixels.show();
 }
 
 void print_minuti(int minuti){
   int decine=minuti/10;
   int unita=minuti % 10;
 
-  if (minuti ==0){
-    paintWord(arrE_CONG,0);
-    }
-   else{
-    paintWord(arrE_CONG,-1);
-    }
-//  arrE_CONG[];
+  //azzero le congiunzioni
+  paintWord(arrE_CONG,0);
+  paintWord(arrMENO,0);
   
-  if(decine==1){ //DA DIECI A DICIANNOVE
-    switch (unita) {
-    case 0:
-      paintWord(arrMIN_QUATTRO,0);
-      paintWord(arrMIN_UNO,0);
+  //controllo se sono prima della mezz'ora o dopo
+  if (minuti <= 30){
+    paintWord(arrE_CONG,-1);
+    paintWord(arrMENO,0);
+  }
+  else{
+    paintWord(arrE_CONG,0);
+    paintWord(arrMENO,-1);
+  }
+  
+  //accendo i multipli di 5 minuti
+  switch (minuti){
+    case 0 ... 4:
+    case 56 ... 59:
+      paintWord(arrMIN_CINQUE,0);
+      break;
+    case 5 ... 9:
+    case 51 ... 55:
+      paintWord(arrMIN_DIECI,0);
+      paintWord(arrMIN_CINQUE,-1);
+      break;
+    case 10 ... 14:
+    case 46 ... 50:
+      paintWord(arrMIN_QUINDICI,0);
+      paintWord(arrMIN_CINQUE,0);
       paintWord(arrMIN_DIECI,-1);
       break;
-    case 1:
+    case 15 ... 19:
+    case 41 ... 45:
+      paintWord(arrMIN_VENTI,0);
       paintWord(arrMIN_DIECI,0);
-      paintWord(arrMIN_DODICI,0);
-      paintWord(arrMIN_UNDICI,-1);
-      break;
-    case 2:
-      paintWord(arrMIN_UNDICI,0);
-      paintWord(arrMIN_TREDICI,0);
-      paintWord(arrMIN_DODICI,-1);
-      break;
-    case 3:
-      paintWord(arrMIN_DODICI,0);
-      paintWord(arrMIN_QUATTORDICI,0);
-      paintWord(arrMIN_TREDICI,-1);
-      break;
-    case 4:
-      paintWord(arrMIN_TREDICI,0);
-      paintWord(arrMIN_QUINDICI,0);
-      paintWord(arrMIN_QUATTORDICI,-1);
-      break;
-    case 5:
-      paintWord(arrMIN_QUATTORDICI,0);
-      paintWord(arrMIN_SEDICI,0);
       paintWord(arrMIN_QUINDICI,-1);
       break;
-    case 6:
+    case 20 ... 24:
+    case 36 ... 40:
+      paintWord(arrMIN_CINQUE,0);
       paintWord(arrMIN_QUINDICI,0);
-      paintWord(arrMIN_DICIASSETTE,0);
-      paintWord(arrMIN_SEDICI,-1);
+      paintWord(arrMIN_VENTI,-1);
       break;
-    case 7:
-      paintWord(arrMIN_SEDICI,0);
-      paintWord(arrMIN_DICIOTTO,0);
-      paintWord(arrMIN_DICIASSETTE,-1);
+    case 25 ... 29:
+    case 31 ... 35:
+      paintWord(arrMIN_MEZZA,0);
+      paintWord(arrMIN_VENTI,-1);
+      paintWord(arrMIN_CINQUE,-1);
       break;
-    case 8:
-      paintWord(arrMIN_DICIASSETTE,0);
-      paintWord(arrMIN_DICIANNOVE,0);
-      paintWord(arrMIN_DICIOTTO,-1);
-      break;
-    case 9:
-      paintWord(arrMIN_DICIOTTO,0);
+    case 30:
       paintWord(arrMIN_VENTI,0);
-      paintWord(arrMIN_DICIANNOVE,-1);
+      paintWord(arrMIN_CINQUE,0);
+      paintWord(arrMIN_MEZZA,-1);
       break;
-    }
-  }
-  else{ 
-    if(unita==1){ // SE UNITÀ È 1
-      switch (decine) {
-      case 0:
-        paintWord(arrMIN_UNO,-1);
-        break;
-      case 1:
-        paintWord(arrMIN_DIECI,0);
-        paintWord(arrMIN_UNDICI,-1);
-        break;
-      case 2:
-        paintWord(arrMIN_VENTI,0);
-        paintWord(arrMIN_VENT,-1);
-        paintWord(arrMIN_UNO,-1);
-        break;
-      case 3:
-        paintWord(arrMIN_TRENTA,0);
-        paintWord(arrMIN_TRENT,-1);
-        paintWord(arrMIN_UNO,-1);
-        break;
-      case 4:
-        paintWord(arrMIN_QUARANTA,0);
-        paintWord(arrMIN_QUARANT,-1);
-        paintWord(arrMIN_UNO,-1);
-        break;
-      case 5:
-        paintWord(arrMIN_CINQUANTA,0);
-        paintWord(arrMIN_CINQUANT,-1);
-        paintWord(arrMIN_UNO,-1);
-        break;
-      default:
-        // statements
-        break;
-      }
-    }
-    else{
-      switch (decine) {
-      case 0:
-        paintWord(arrMIN_CINQUANTA,0);
-        break;
-      case 1:
-        paintWord(arrMIN_NOVE,0);
-        paintWord(arrMIN_DIECI,-1);
-        break;
-      case 2:
-        paintWord(arrMIN_DICIANNOVE,0);
-        paintWord(arrMIN_VENTI,-1);
-        break;
-      case 3:
-        paintWord(arrMIN_VENTI,0);
-        paintWord(arrMIN_TRENTA,-1);
-        break;
-      case 4:
-        paintWord(arrMIN_TRENTA,0);
-        paintWord(arrMIN_QUARANTA,-1);
-        break;
-      case 5:
-        paintWord(arrMIN_QUARANTA,0);
-        paintWord(arrMIN_CINQUANTA,-1);
-        break;
-      }
-      switch (unita) {
-      case 0:
-        paintWord(arrMIN_NOVE,0);
-        paintWord(arrMIN_UNO,0);
-        break;
-      case 1:
-      paintWord(arrMIN_DUE,0);
-        paintWord(arrMIN_UNO,-1);
-        break;
-      case 2:
-        paintWord(arrMIN_UNO,0);
-        paintWord(arrMIN_TRE,0);
-        paintWord(arrMIN_DUE,-1);
-        break;
-      case 3:
-        paintWord(arrMIN_DUE,0);
-        paintWord(arrMIN_QUATTRO,0);
-        paintWord(arrMIN_TRE,-1);
-        break;
-      case 4:
-        paintWord(arrMIN_TRE,0);
-        paintWord(arrMIN_CINQUE,0);
-        paintWord(arrMIN_QUATTRO,-1);
-        break;
-      case 5:
-        paintWord(arrMIN_QUATTRO,0);
-        paintWord(arrMIN_SEI,0);
-        paintWord(arrMIN_CINQUE,-1);
-        break;
-      case 6:
-        paintWord(arrMIN_CINQUE,0);
-        paintWord(arrMIN_SETTE,0);
-        paintWord(arrMIN_SEI,-1);
-        break;
-      case 7:
-        paintWord(arrMIN_SEI,0);
-        paintWord(arrMIN_OTTO,0);
-        paintWord(arrMIN_SETTE,-1);
-        break;
-      case 8:
-        paintWord(arrMIN_SETTE,0);
-        paintWord(arrMIN_NOVE,0);
-        paintWord(arrMIN_OTTO,-1);
-        break;
-      case 9:
-        paintWord(arrMIN_OTTO,0);
-        paintWord(arrMIN_NOVE,-1);
-        break;
-      }
-    }
   }
 }
 
@@ -536,8 +325,7 @@ void print_ore(int ore){
     paintWord(arrSONO_LE,-1);
     paintWord(arrORE_DIECI,0);
     paintWord(arrE_ACC,0);
-    paintWord(arrORE_MEZZOGIORNO,0);
-    paintWord(arrORE_MEZZANOTTE,0);
+    paintWord(arrORE_DODICI,0);
     paintWord(arrORE_UNDICI,-1);
     break;
   case 12:
@@ -551,64 +339,14 @@ void print_ore(int ore){
   }
 }  
 
-void cambia_ore(void){
-
-  ButtonUpState = digitalRead(buttonUP_Pin);
-  ButtonDownState = digitalRead(buttonDOWN_Pin);
-
-  int ore = now.hour();
-  int minuti = now.minute();
-  int secondi=now.second();
-
-  if (ButtonUpState != lastButtonUpState) {
-    if (ButtonUpState == HIGH) {
-      rtc.adjust(DateTime(now.unixtime() + 3600));
-    }
-  }
-  else if (ButtonDownState != lastButtonDownState) {
-    if (ButtonDownState == HIGH) {
-      rtc.adjust(DateTime(now.unixtime() - 3600));
-    }
-  }
-
-  lastButtonUpState = ButtonUpState;
-  lastButtonDownState = ButtonDownState;
-
-} 
-
-void cambia_minuti(void){
-
-  ButtonUpState = digitalRead(buttonUP_Pin);
-  ButtonDownState = digitalRead(buttonDOWN_Pin);
-
-  int ore = now.hour();
-  int minuti = now.minute();
-  int secondi=now.second();
-
-  if (ButtonUpState != lastButtonUpState) {
-    if (ButtonUpState == HIGH) {
-      rtc.adjust(DateTime(now.unixtime() + 60));
-    }
-  }
-  else if (ButtonDownState != lastButtonDownState) {
-    if (ButtonDownState == HIGH) {
-      rtc.adjust(DateTime(now.unixtime() - 60));
-    }
-  }
-
-  lastButtonUpState = ButtonUpState;
-  lastButtonDownState = ButtonDownState;
-
-}
-
 void paintWord(int arrWord[], uint32_t intColor){
-  for(int i = 0; i < strip.numPixels() + 1; i++){
+  for(int i = 0; i < pixels.numPixels() + 1; i++){
     if(arrWord[i] == -1){
-      strip.show();
+      pixels.show();
       break;
     }
     else{
-      strip.setPixelColor(arrWord[i],intColor);
+      pixels.setPixelColor(arrWord[i],intColor);
       //      Serial.print(arrWord[i]);
       //      Serial.print(':');
       //      Serial.println(intColor);
